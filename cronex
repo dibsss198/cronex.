@@ -1,0 +1,140 @@
+#!/usr/bin/env ruby
+require 'socket'
+puts "Welcome to cronex!!! a fuzzing tool!!!"
+
+BANNER = <<~ASCII
+   ___________  ____   ____   ____ ___  ___
+  / ___\\_  __ \\/  _ \\ /    \\_/ __ \\\\  \\/  /
+  \\  \\___|  | \\(  <_> )   |  \\  ___/ >    <
+   \\___  >__|   \\____/|___|  /\\___  >__/\\_ \\
+       \\/                  \\/     \\/      \\/
+          Cronex 
+ASCII
+puts "---------------------------------------"
+puts "---------------------------------------"
+puts "---------------------------------------"
+
+puts BANNER
+
+
+print "what is your target?? make sure you have perms to test please!! i am not responsible for ANY bad stuff you do here.:"
+TARGET_HOST = gets.chomp
+print "what is your target port???"
+TARGET_PORT = gets.chomp.to_i
+
+
+# ---- Packet definition ----
+class Packet
+  attr_accessor :version, :type, :payload
+
+  def initialize(version: 1, type: 1, payload: "hello")
+    @version = version
+    @type = type
+    @payload = payload
+  end
+
+  def length
+    @payload.bytesize
+  end
+
+  # Encode packet into bytes
+  def encode
+    [
+      @version & 0xff,
+      @type & 0xff,
+      (length >> 8) & 0xff,
+      length & 0xff
+    ].pack("C C C C") + @payload
+  end
+
+  def describe
+    {
+      version: @version,
+      type: @type,
+      length: length,
+      payload: @payload.inspect
+    }
+  end
+end
+
+# ---- Mutations ----
+module Mutations
+  def self.bad_length(packet)
+    mutated = packet.dup
+    def mutated.length
+      9999 # incorrect on purpose
+    end
+    mutated
+  end
+
+  def self.invalid_version(packet)
+    Packet.new(
+      version: 255,
+      type: packet.type,
+      payload: packet.payload
+    )
+  end
+
+  def self.empty_payload(packet)
+    Packet.new(
+      version: packet.version,
+      type: packet.type,
+      payload: ""
+    )
+  end
+end
+
+# ---- Sender ----
+# ---- Sender ----
+class Sender
+  def self.send_packet(packet)
+    begin
+      socket = TCPSocket.new(TARGET_HOST, TARGET_PORT)
+
+      socket.setsockopt(
+        Socket::SOL_SOCKET,
+        Socket::SO_RCVTIMEO,
+        [2, 0].pack("l_2")
+      )
+
+      socket.write(packet.encode)
+
+      begin
+        response = socket.readpartial(1024)
+      rescue EOFError
+        response = "(no response)"
+      rescue Errno::EAGAIN, Errno::EWOULDBLOCK
+        response = "(timeout)"
+      end
+
+    rescue => e
+      return "Connection failed: #{e.message}"
+    ensure
+      socket.close if socket
+    end
+
+    response
+  end
+end
+
+  
+# ---- Main test run ----
+baseline = Packet.new
+tests = {
+  "baseline" => baseline,
+  "bad_length" => Mutations.bad_length(baseline),
+  "invalid_version" => Mutations.invalid_version(baseline),
+  "empty_payload" => Mutations.empty_payload(baseline)
+}
+
+tests.each do |name, pkt|
+  puts "\n=== Test: #{name} ==="
+  puts "Packet: #{pkt.describe}"
+
+  begin
+    response = Sender.send_packet(pkt)
+    puts "Response: #{response.inspect}"
+  rescue => e
+    puts "Error: #{e}"
+  end
+end
